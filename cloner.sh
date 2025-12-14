@@ -3,14 +3,15 @@
 # Java Repository Clone and Validation Script
 # This script searches for, clones, and validates Java 8 Maven repositories with JUnit 5
 
-#set -e  # Exit on any error
+set -e  # Exit on any error
 
 # Configuration
 GITHUB_TOKEN="${GITHUB_TOKEN:-}"  # Set your GitHub token as environment variable
 CLONE_DIR="./cloned_repos"
 LOG_FILE="./repo_validation.log"
-MAX_REPOS=500  # Maximum number of repositories to process
-MAX_PAGES=50  # Number of pages to fetch from GitHub
+PENDING_LIST="./pending_repos.txt"
+VALIDATED_LIST="./validated_repos.txt"
+MAX_REPOS=50  # Maximum number of repositories to process
 JAVA_VERSION="1.8"  # Target Java version
 
 # Colors for output
@@ -53,12 +54,19 @@ check_prerequisites() {
     # Create clone directory
     mkdir -p "$CLONE_DIR"
     
+    # Initialize validated repos list if it doesn't exist
+    if [[ ! -f "$VALIDATED_LIST" ]]; then
+        echo "# Validated Java 8 Maven Repositories with JUnit 5" > "$VALIDATED_LIST"
+        echo "# Format: Repository Name | Repository URL" >> "$VALIDATED_LIST"
+        echo "# =============================================" >> "$VALIDATED_LIST"
+    fi
+    
     log "INFO" "${GREEN}Prerequisites check passed${NC}"
 }
 
 # Search for repositories on GitHub
 search_repositories() {
-    log "INFO" "${BLUE}Searching for Java 8 Maven repositories with JUnit 5 (fetching ${MAX_PAGES} pages)...${NC}"
+    log "INFO" "${BLUE}Searching for Java 8 Maven repositories with JUnit 5...${NC}"
     
     local auth_header=""
     if [[ -n "$GITHUB_TOKEN" ]]; then
@@ -68,70 +76,25 @@ search_repositories() {
     # GitHub API search query for Java repositories with specific criteria
     local query="language:java+maven+junit5+java8+in:readme,description"
     local api_url="https://api.github.com/search/repositories"
+    local params="q=${query}&sort=stars&order=desc&per_page=${MAX_REPOS}"
     
-    # Clear or create temporary file
-    > repo_urls.tmp
+    local response=$(curl -s -H "$auth_header" "${api_url}?${params}")
     
-    local total_repos_found=0
-    
-    # Fetch multiple pages
-    for page in $(seq 1 $MAX_PAGES); do
-        log "INFO" "Fetching page $page of $MAX_PAGES..."
-        
-        local params="q=${query}&sort=stars&order=desc&per_page=100&page=${page}"
-        local response=$(curl -s -H "$auth_header" "${api_url}?${params}")
-        
-        if [[ $? -ne 0 ]]; then
-            log "ERROR" "${RED}Failed to fetch page $page${NC}"
-            continue
-        fi
-        
-        # Check for API rate limit
-        local rate_limit_remaining=$(echo "$response" | jq -r '.message // empty' | grep -i "rate limit" || echo "")
-        if [[ -n "$rate_limit_remaining" ]]; then
-            log "WARN" "${YELLOW}GitHub API rate limit reached at page $page${NC}"
-            break
-        fi
-        
-        # Extract repository clone URLs from this page
-        local page_repos=$(echo "$response" | jq -r '.items[]? | .clone_url')
-        
-        # Check if we got any results
-        if [[ -z "$page_repos" ]]; then
-            log "INFO" "No more repositories found at page $page, stopping pagination"
-            break
-        fi
-        
-        # Append to temporary file
-        echo "$page_repos" >> repo_urls.tmp
-        
-        local repos_this_page=$(echo "$page_repos" | wc -l)
-        total_repos_found=$((total_repos_found + repos_this_page))
-        
-        log "INFO" "Found $repos_this_page repositories on page $page (total: $total_repos_found)"
-        
-        # Check if we've reached the maximum
-        if [[ $total_repos_found -ge $MAX_REPOS ]]; then
-            log "INFO" "Reached maximum repository limit ($MAX_REPOS)"
-            break
-        fi
-        
-        # Be nice to GitHub API - add a small delay between requests
-        sleep 1
-    done
-    
-    # Limit to MAX_REPOS if we got more
-    if [[ $total_repos_found -gt $MAX_REPOS ]]; then
-        head -n $MAX_REPOS repo_urls.tmp > repo_urls.tmp.limited
-        mv repo_urls.tmp.limited repo_urls.tmp
-        total_repos_found=$MAX_REPOS
+    if [[ $? -ne 0 ]]; then
+        log "ERROR" "${RED}Failed to search repositories${NC}"
+        exit 1
     fi
     
-    log "INFO" "Total of $total_repos_found repositories to process"
+    # Extract repository information (name and clone URL)
+    echo "$response" | jq -r '.items[]? | "\(.name)|\(.clone_url)"' > "$PENDING_LIST"
     
-    if [[ $total_repos_found -eq 0 ]]; then
+    local repo_count=$(wc -l < "$PENDING_LIST" 2>/dev/null || echo "0")
+    log "INFO" "Found $repo_count repositories to process"
+    log "INFO" "Pending repositories saved to: $PENDING_LIST"
+    
+    if [[ $repo_count -eq 0 ]]; then
         log "WARN" "${YELLOW}No repositories found matching criteria${NC}"
-        rm -f repo_urls.tmp
+        rm -f "$PENDING_LIST"
         exit 0
     fi
 }
@@ -253,38 +216,99 @@ remove_repository() {
     rm -rf "$repo_path"
 }
 
+# Add repository to validated list
+add_to_validated_list() {
+    local repo_name=$1
+    local repo_url=$2
+    
+    echo "$repo_name | $repo_url" >> "$VALIDATED_LIST"
+    log "INFO" "${GREEN}Added $repo_name to validated list${NC}"
+}
+
+# Remove repository from pending list
+remove_from_pending_list() {
+    local repo_name=$1
+    local repo_url=$2
+    
+    # Create a temporary file without the processed repository
+    local temp_file="${PENDING_LIST}.tmp"
+    local search_pattern="${repo_name}|${repo_url}"
+    
+    grep -v -F "$search_pattern" "$PENDING_LIST" > "$temp_file" || true
+    mv "$temp_file" "$PENDING_LIST"
+    
+    log "INFO" "Removed $repo_name from pending list"
+}
+
+# Display current status
+display_status() {
+    local pending_count=$(wc -l < "$PENDING_LIST" 2>/dev/null || echo "0")
+    local validated_count=$(($(wc -l < "$VALIDATED_LIST" 2>/dev/null || echo "0") - 3))  # Subtract header lines
+    
+    if [[ $validated_count -lt 0 ]]; then
+        validated_count=0
+    fi
+    
+    echo ""
+    echo "=================================="
+    echo "CURRENT STATUS"
+    echo "=================================="
+    echo "Pending repositories: $pending_count"
+    echo "Validated repositories: $validated_count"
+    echo "=================================="
+    echo ""
+}
+
 # Process a single repository
 process_repository() {
-    local repo_url=$1
-    local repo_name=$(basename "$repo_url" .git)
+    local repo_name=$1
+    local repo_url=$2
     local repo_path="$CLONE_DIR/$repo_name"
     
+    log "INFO" "${BLUE}========================================${NC}"
     log "INFO" "${BLUE}Processing repository: $repo_name${NC}"
+    log "INFO" "${BLUE}URL: $repo_url${NC}"
+    log "INFO" "${BLUE}========================================${NC}"
     
     # Clone repository
     if ! clone_repository "$repo_url"; then
+        remove_from_pending_list "$repo_name" "$repo_url"
+        display_status
         return 1
     fi
     
     # Validate structure
     if ! validate_repository_structure "$repo_path"; then
         remove_repository "$repo_path"
+        remove_from_pending_list "$repo_name" "$repo_url"
+        display_status
         return 1
     fi
     
     # Compile repository
     if ! compile_repository "$repo_path"; then
         remove_repository "$repo_path"
+        remove_from_pending_list "$repo_name" "$repo_url"
+        display_status
         return 1
     fi
     
     # Run tests
     if ! run_tests "$repo_path"; then
         remove_repository "$repo_path"
+        remove_from_pending_list "$repo_name" "$repo_url"
+        display_status
         return 1
     fi
     
-    log "INFO" "${GREEN}Repository $repo_name successfully validated and kept${NC}"
+    # Repository passed all validations
+    log "INFO" "${GREEN}✓ Repository $repo_name successfully validated and kept${NC}"
+    
+    # Remove from pending and add to validated
+    remove_from_pending_list "$repo_name" "$repo_url"
+    add_to_validated_list "$repo_name" "$repo_url"
+    
+    display_status
     return 0
 }
 
@@ -292,32 +316,36 @@ process_repository() {
 generate_report() {
     log "INFO" "${BLUE}Generating summary report...${NC}"
     
-    local total_repos=$(wc -l < repo_urls.tmp 2>/dev/null || echo "0")
+    local validated_count=$(($(wc -l < "$VALIDATED_LIST" 2>/dev/null || echo "0") - 3))
+    if [[ $validated_count -lt 0 ]]; then
+        validated_count=0
+    fi
+    
     local successful_repos=$(find "$CLONE_DIR" -maxdepth 1 -type d | grep -v "^$CLONE_DIR$" | wc -l)
-    local failed_repos=$((total_repos - successful_repos))
     
     echo ""
     echo "=================================="
     echo "REPOSITORY VALIDATION SUMMARY"
     echo "=================================="
-    echo "Total repositories processed: $total_repos"
-    echo "Successfully validated: $successful_repos"
-    echo "Failed validation (removed): $failed_repos"
-    
-    if [[ $total_repos -gt 0 ]]; then
-        echo "Success rate: $(awk "BEGIN {printf \"%.1f\", $successful_repos*100/$total_repos}")%"
-    else
-        echo "Success rate: 0.0%"
-    fi
+    echo "Successfully validated: $validated_count"
+    echo "Repositories in storage: $successful_repos"
     echo ""
-    echo "Validated repositories are stored in: $CLONE_DIR"
+    echo "Validated repositories list: $VALIDATED_LIST"
+    echo "Cloned repositories directory: $CLONE_DIR"
     echo "Full log available at: $LOG_FILE"
+    echo ""
+    
+    if [[ $validated_count -gt 0 ]]; then
+        echo "Validated Repositories:"
+        echo "----------------------"
+        tail -n +4 "$VALIDATED_LIST"
+    fi
+    
     echo "=================================="
 }
 
 # Cleanup function
 cleanup() {
-    rm -f repo_urls.tmp
     log "INFO" "Cleanup completed"
 }
 
@@ -334,19 +362,22 @@ main() {
     # Search for repositories
     search_repositories
     
+    # Display initial status
+    display_status
+    
     # Process each repository
     local successful=0
     local failed=0
     
-    while IFS= read -r repo_url; do
-        if [[ -n "$repo_url" ]]; then
-            if process_repository "$repo_url"; then
+    while IFS='|' read -r repo_name repo_url; do
+        if [[ -n "$repo_name" && -n "$repo_url" ]]; then
+            if process_repository "$repo_name" "$repo_url"; then
                 ((successful++))
             else
                 ((failed++))
             fi
         fi
-    done < repo_urls.tmp
+    done < <(cat "$PENDING_LIST")
     
     # Generate final report
     generate_report
@@ -362,18 +393,21 @@ usage() {
     echo "  -h, --help          Show this help message"
     echo "  -t, --token TOKEN   Set GitHub API token"
     echo "  -d, --dir DIR       Set clone directory (default: ./cloned_repos)"
-    echo "  -m, --max NUM       Set maximum repositories to process (default: 500)"
-    echo "  -p, --pages NUM     Set number of pages to fetch (default: 50)"
+    echo "  -m, --max NUM       Set maximum repositories to process (default: 50)"
     echo ""
     echo "Environment variables:"
     echo "  GITHUB_TOKEN        GitHub API token for authenticated requests"
+    echo ""
+    echo "Output files:"
+    echo "  pending_repos.txt      List of repositories pending validation"
+    echo "  validated_repos.txt    List of successfully validated repositories"
+    echo "  repo_validation.log    Detailed execution log"
     echo ""
     echo "Examples:"
     echo "  $0                  # Run with default settings"
     echo "  $0 -t your_token    # Run with GitHub token"
     echo "  $0 -d /tmp/repos    # Use custom clone directory"
     echo "  $0 -m 20            # Process maximum 20 repositories"
-    echo "  $0 -p 10            # Fetch only 10 pages from GitHub"
 }
 
 # Parse command line arguments
@@ -393,10 +427,6 @@ while [[ $# -gt 0 ]]; do
             ;;
         -m|--max)
             MAX_REPOS="$2"
-            shift 2
-            ;;
-        -p|--pages)
-            MAX_PAGES="$2"
             shift 2
             ;;
         *)
