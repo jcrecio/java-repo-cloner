@@ -1,25 +1,25 @@
 #!/bin/bash
 
 # Java Repository Clone and Validation Script
-# This script searches for, clones, and validates Java 8 Maven repositories with JUnit 5
+# This script validates Java 8 Maven repositories with JUnit 5
 
-set -e  # Exit on any error
+set -e
 
 # Configuration
-GITHUB_TOKEN="${GITHUB_TOKEN:-}"  # Set your GitHub token as environment variable
-CLONE_DIR="./cloned_repos"
-LOG_FILE="./repo_validation.log"
-PENDING_LIST="./pending_repos.txt"
-VALIDATED_LIST="./validated_repos.txt"
-MAX_REPOS=50  # Maximum number of repositories to process
-JAVA_VERSION="1.8"  # Target Java version
+GITHUB_TOKEN="${GITHUB_TOKEN:-}"
+CLONE_DIR="/workspace/cloned_repos"
+LOG_FILE="/workspace/repo_validation.log"
+PENDING_LIST="/workspace/pending_repos.txt"
+VALIDATED_LIST="/workspace/validated_repos.txt"
+MAX_REPOS="${MAX_REPOS:-50}"
+JAVA_VERSION="1.8"
 
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
 # Logging function
 log() {
@@ -243,7 +243,7 @@ remove_from_pending_list() {
 # Display current status
 display_status() {
     local pending_count=$(wc -l < "$PENDING_LIST" 2>/dev/null || echo "0")
-    local validated_count=$(($(wc -l < "$VALIDATED_LIST" 2>/dev/null || echo "0") - 3))  # Subtract header lines
+    local validated_count=$(($(wc -l < "$VALIDATED_LIST" 2>/dev/null || echo "0") - 3))
     
     if [[ $validated_count -lt 0 ]]; then
         validated_count=0
@@ -387,55 +387,27 @@ main() {
 
 # Print usage information
 usage() {
-    echo "Usage: $0 [options]"
+    echo "Java Repository Clone and Validation Script"
     echo ""
-    echo "Options:"
-    echo "  -h, --help          Show this help message"
-    echo "  -t, --token TOKEN   Set GitHub API token"
-    echo "  -d, --dir DIR       Set clone directory (default: ./cloned_repos)"
-    echo "  -m, --max NUM       Set maximum repositories to process (default: 50)"
+    echo "This script searches for, clones, and validates Java 8 Maven repositories"
+    echo "with JUnit 5 tests from GitHub."
     echo ""
     echo "Environment variables:"
-    echo "  GITHUB_TOKEN        GitHub API token for authenticated requests"
+    echo "  GITHUB_TOKEN        GitHub API token for authenticated requests (optional)"
+    echo "  MAX_REPOS           Maximum repositories to process (default: 50)"
     echo ""
-    echo "Output files:"
+    echo "Output files (in /workspace):"
     echo "  pending_repos.txt      List of repositories pending validation"
     echo "  validated_repos.txt    List of successfully validated repositories"
     echo "  repo_validation.log    Detailed execution log"
-    echo ""
-    echo "Examples:"
-    echo "  $0                  # Run with default settings"
-    echo "  $0 -t your_token    # Run with GitHub token"
-    echo "  $0 -d /tmp/repos    # Use custom clone directory"
-    echo "  $0 -m 20            # Process maximum 20 repositories"
+    echo "  cloned_repos/          Directory containing validated repositories"
 }
 
-# Parse command line arguments
-while [[ $# -gt 0 ]]; do
-    case $1 in
-        -h|--help)
-            usage
-            exit 0
-            ;;
-        -t|--token)
-            GITHUB_TOKEN="$2"
-            shift 2
-            ;;
-        -d|--dir)
-            CLONE_DIR="$2"
-            shift 2
-            ;;
-        -m|--max)
-            MAX_REPOS="$2"
-            shift 2
-            ;;
-        *)
-            log "ERROR" "Unknown option: $1"
-            usage
-            exit 1
-            ;;
-    esac
-done
+# Check for help flag
+if [[ "$1" == "-h" || "$1" == "--help" ]]; then
+    usage
+    exit 0
+fi
 
 # Run main function
 main
